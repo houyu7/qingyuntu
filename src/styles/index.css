@@ -1,0 +1,24 @@
+@import './fonts.css';
+@import './tailwind.css';
+@import './theme.css';
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(18, 184, 152, 0.25);
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(18, 184, 152, 0.45);
+}
+
+/* Safe area for mobile notch */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 8px);
+}
