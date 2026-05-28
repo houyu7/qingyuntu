@@ -43,6 +43,10 @@ interface ChatCompletionResponse {
 }
 
 function formatApiError(status: number, message: string, response: Response): string {
+  if (status === 403) {
+    return 'AI 请求失败（403）：当前密钥没有访问这个模型或接口的权限，或者模型还没有在账号里开通。请检查 DashScope 控制台里的模型授权、Key 状态，以及 VITE_AI_MODEL 是否可用。';
+  }
+
   if (status === 429) {
     const retryAfter = response.headers.get('Retry-After');
     const retryHint = retryAfter ? `建议等待 ${retryAfter} 秒后再试。` : '建议稍后再试。';
