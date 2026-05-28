@@ -42,6 +42,20 @@ interface ChatCompletionResponse {
   }>;
 }
 
+function formatApiError(status: number, message: string, response: Response): string {
+  if (status === 429) {
+    const retryAfter = response.headers.get('Retry-After');
+    const retryHint = retryAfter ? `建议等待 ${retryAfter} 秒后再试。` : '建议稍后再试。';
+    return `AI 请求失败（429）：当前请求过于频繁或配额已达上限。${retryHint}`;
+  }
+
+  if (status === 400 && /Not supported model/i.test(message)) {
+    return `AI 模型不被当前接口支持：${message}。请把 VITE_AI_MODEL 改成服务商支持的模型名。`;
+  }
+
+  return `AI 请求失败（${status}）：${message}`;
+}
+
 const DIMENSION_LABELS: AiDimension['label'][] = ['能力维度', '经历维度', '成长维度'];
 
 function normalizeLevel(level: string): AiDimensionLevel {
@@ -185,11 +199,7 @@ export async function analyzeCareerPathWithAI(input: AnalyzeInput): Promise<AiLa
     const text = await response.text();
     const message = text.slice(0, 200);
 
-    if (response.status === 400 && /Not supported model/i.test(message)) {
-      throw new Error(`AI 模型不被当前接口支持：${message}。请把 VITE_AI_MODEL 改成服务商支持的模型名。`);
-    }
-
-    throw new Error(`AI 请求失败（${response.status}）：${message}`);
+    throw new Error(formatApiError(response.status, message, response));
   }
 
   const data = (await response.json()) as ChatCompletionResponse;
