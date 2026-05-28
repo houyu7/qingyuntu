@@ -19,7 +19,7 @@
   ```bash
   VITE_AI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
   VITE_AI_API_KEY=your_api_key
-  VITE_AI_MODEL=qwen3-max-2025-10-30
+  VITE_AI_MODEL=glm-5
   ```
 
   3. 重新启动开发服务器：`npm run dev`
