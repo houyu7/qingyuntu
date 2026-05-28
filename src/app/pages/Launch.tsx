@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
+import * as mammoth from 'mammoth/mammoth.browser';
 import {
   Rocket, Upload, Target,
   Sparkles, CheckCircle2, AlertCircle,
@@ -191,6 +192,18 @@ const ANALYZE_CHECKS = ['解析岗位核心要求', '识别简历优势能力', 
 
 function wait(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function extractWordResumeText(file: File): Promise<string> {
+  const fileName = file.name.toLowerCase();
+
+  if (fileName.endsWith('.doc') || file.type === 'application/msword') {
+    throw new Error('当前仅支持 .docx 格式的 Word 简历，请先另存为 .docx 后再上传。');
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const result = await mammoth.extractRawText({ arrayBuffer });
+  return result.value.trim();
 }
 
 function AnalyzingAnimation({ completedCount }: { completedCount: number }) {
@@ -697,10 +710,21 @@ export function Launch() {
       } catch (err) {
         console.warn('Failed to read file text:', err);
       }
+    } else if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || file.name.endsWith('.docx')) {
+      try {
+        const text = await extractWordResumeText(file);
+        setResumeText(text);
+      } catch (err) {
+        console.warn('Failed to extract Word resume text:', err);
+        setAnalysisError(err instanceof Error ? err.message : 'Word 简历解析失败，请改为 .docx 后重试。');
+      }
     } else if (file.type === 'application/pdf') {
       // For PDF, we cannot extract text in browser without a library
       // Just show a note asking the user to paste the content manually
       setResumeText('');
+    } else if (file.type === 'application/msword' || file.name.endsWith('.doc')) {
+      setResumeText('');
+      setAnalysisError('当前仅支持 .docx 格式的 Word 简历，请先另存为 .docx 后再上传。');
     }
   };
 
@@ -948,7 +972,7 @@ export function Launch() {
                     <Upload size={28} style={{ color: '#12B898' }} />
                   </div>
                   <div className="font-medium text-gray-700 mb-1">拖拽简历到此处</div>
-                  <div className="text-sm text-gray-400 mb-4">支持 PDF / Word / TXT 格式</div>
+                  <div className="text-sm text-gray-400 mb-4">支持 PDF / Word(.docx) / TXT 格式</div>
                   <button
                     onClick={handleSelectFileClick}
                     className="px-6 py-2.5 rounded-xl text-sm font-medium"
@@ -970,8 +994,8 @@ export function Launch() {
 
             <div className="glass-card rounded-xl p-3.5 mb-5 flex items-start gap-2.5">
               <AlertCircle size={14} style={{ color: '#F59E0B', flexShrink: 0, marginTop: 1 }} />
-              <p className="text-xs text-gray-500">
-                分析会调用你在环境变量中配置的 AI 服务接口。TXT/MD文件会自动提取内容，PDF需要手动复制粘贴。请不要上传敏感隐私信息。
+                <p className="text-xs text-gray-500">
+                分析会调用你在环境变量中配置的 AI 服务接口。TXT/MD 和 Word(.docx) 会自动提取内容，PDF 需要手动复制粘贴。请不要上传敏感隐私信息。
               </p>
             </div>
 
