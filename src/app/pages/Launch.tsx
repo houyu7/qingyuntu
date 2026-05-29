@@ -1,17 +1,17 @@
 import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
-import * as mammoth from 'mammoth/mammoth.browser';
+// mammoth will be loaded lazily when user uploads a .docx to keep bundle small
 import {
   Rocket, Upload, Target,
-  Sparkles, CheckCircle2, AlertCircle,
+  Sparkles, CheckCircle2, AlertCircle, Loader2,
   TrendingUp, Lightbulb, ArrowRight, Pencil,
   Trash2, Plus, GripVertical, X, Check
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import type { StagePlanItem } from '../context/AppContext';
-import { analyzeCareerPathWithAI } from '../services/ai';
-import type { AiDimension } from '../services/ai';
+import { analyzeCareerPathWithAI, extractResumeMaterialsWithAI } from '../services/ai';
+import type { AiDimension, ResumeMaterial } from '../services/ai';
 
 const SAMPLE_JD = `岗位：产品经理实习生
 公司：某互联网大厂
@@ -199,6 +199,14 @@ async function extractWordResumeText(file: File): Promise<string> {
 
   if (fileName.endsWith('.doc') || file.type === 'application/msword') {
     throw new Error('当前仅支持 .docx 格式的 Word 简历，请先另存为 .docx 后再上传。');
+  }
+
+  // lazy-load mammoth to reduce initial bundle size
+  let mammoth: any;
+  try {
+    mammoth = await import('mammoth/mammoth.browser');
+  } catch (e) {
+    throw new Error('无法加载文档解析器（mammoth），请稍后重试或粘贴简历文本。');
   }
 
   const arrayBuffer = await file.arrayBuffer();
@@ -612,6 +620,8 @@ export function Launch() {
   const navigate = useNavigate();
   const { user, setHasSetup, setXiaoYunMessage, applyPlan, seedResumeLibrary } = useApp();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const lastFileRef = useRef<File | null>(null);
+  const analysisAbortRef = useRef<AbortController | null>(null);
   const [step, setStep] = useState<Step>('jd');
   const [jdText, setJdText] = useState('');
   const [resumeUploaded, setResumeUploaded] = useState(false);
@@ -620,6 +630,9 @@ export function Launch() {
   const [isDragging, setIsDragging] = useState(false);
   const [showResult, setShowResult] = useState(false);
   const [analysisError, setAnalysisError] = useState('');
+  const [extractingWord, setExtractingWord] = useState(false);
+  const [showPasteFallback, setShowPasteFallback] = useState(false);
+  const pasteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [aiEncouragement, setAiEncouragement] = useState(DEFAULT_ENCOURAGEMENT);
   const [growthDimensions, setGrowthDimensions] = useState<AiDimension[]>(DEFAULT_DIMENSION_DATA);
   const [suggestions, setSuggestions] = useState<Suggestion[]>(INITIAL_SUGGESTIONS);
@@ -630,6 +643,11 @@ export function Launch() {
   const [showRawResponse, setShowRawResponse] = useState(false);
   const [wordCloudItems, setWordCloudItems] = useState<WordCloudItem[]>(DEFAULT_WORD_CLOUD_ITEMS);
   const [analyzingCompletedCount, setAnalyzingCompletedCount] = useState(0);
+  const [resumeMaterials, setResumeMaterials] = useState<ResumeMaterial[]>([]);
+
+  const handleCancelAnalysis = () => {
+    analysisAbortRef.current?.abort();
+  };
 
   const handleAnalyze = async () => {
     setAnalysisError('');
@@ -642,6 +660,10 @@ export function Launch() {
     setStep('analyzing');
     setAnalyzingCompletedCount(0);
 
+    analysisAbortRef.current?.abort();
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
+
     let progressTimer: ReturnType<typeof setInterval> | null = setInterval(() => {
       setAnalyzingCompletedCount(prev => {
         const maxPreviewDone = ANALYZE_CHECKS.length - 1;
@@ -650,12 +672,21 @@ export function Launch() {
     }, 1200);
 
     try {
-      const aiResult = await analyzeCareerPathWithAI({
-        jdText,
-        resumeText,
-        targetJob: user.targetJob,
-        targetCompany: user.targetCompany,
-      });
+      const [aiResult, extractionResult] = await Promise.all([
+        analyzeCareerPathWithAI({
+          jdText,
+          resumeText,
+          targetJob: user.targetJob,
+          targetCompany: user.targetCompany,
+        }, { signal: controller.signal }),
+        extractResumeMaterialsWithAI({
+          resumeText,
+          targetJob: user.targetJob,
+          targetCompany: user.targetCompany,
+        }, { signal: controller.signal }),
+      ]);
+
+      setResumeMaterials(extractionResult.materials);
 
       setAiEncouragement(aiResult.encouragement);
       setGrowthDimensions(aiResult.dimensions);
@@ -669,7 +700,6 @@ export function Launch() {
           detail: item.detail,
         }))
       );
-
       if (progressTimer) {
         clearInterval(progressTimer);
         progressTimer = null;
@@ -681,11 +711,19 @@ export function Launch() {
       setShowResult(true);
       setXiaoYunMessage('能力画像已生成！你已经具备了不少核心能力，继续加油 🚀');
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setAnalysisError('已取消分析，可以重新开始。');
+      } else {
+        const message = error instanceof Error ? error.message : 'AI 分析失败，请稍后重试。';
+        setAnalysisError(message);
+      }
       const message = error instanceof Error ? error.message : 'AI 分析失败，请稍后重试。';
-      setAnalysisError(message);
       setStep('resume');
       setAnalyzingCompletedCount(0);
     } finally {
+      if (analysisAbortRef.current === controller) {
+        analysisAbortRef.current = null;
+      }
       if (progressTimer) clearInterval(progressTimer);
     }
   };
@@ -693,6 +731,7 @@ export function Launch() {
   const handleStartJourney = () => {
     seedResumeLibrary({
       fileName: resumeFileName,
+      materials: resumeMaterials,
       resumeText: resumeText.trim(),
       targetJob: user.targetJob,
       targetCompany: user.targetCompany,
@@ -704,7 +743,7 @@ export function Launch() {
 
   const handleFileChange = async (file: File | null) => {
     if (!file) return;
-
+    lastFileRef.current = file;
     setResumeFileName(file.name);
     setResumeUploaded(true);
 
@@ -717,12 +756,18 @@ export function Launch() {
         console.warn('Failed to read file text:', err);
       }
     } else if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || file.name.endsWith('.docx')) {
+      setExtractingWord(true);
+      setShowPasteFallback(false);
+      setAnalysisError('');
       try {
         const text = await extractWordResumeText(file);
         setResumeText(text);
       } catch (err) {
         console.warn('Failed to extract Word resume text:', err);
         setAnalysisError(err instanceof Error ? err.message : 'Word 简历解析失败，请改为 .docx 后重试。');
+        setShowPasteFallback(true);
+      } finally {
+        setExtractingWord(false);
       }
     } else if (file.type === 'application/pdf') {
       // For PDF, we cannot extract text in browser without a library
@@ -731,6 +776,27 @@ export function Launch() {
     } else if (file.type === 'application/msword' || file.name.endsWith('.doc')) {
       setResumeText('');
       setAnalysisError('当前仅支持 .docx 格式的 Word 简历，请先另存为 .docx 后再上传。');
+    }
+  };
+
+  const handleRetryExtract = async () => {
+    const file = lastFileRef.current;
+    if (!file) {
+      setAnalysisError('没有可重试的文件，请重新上传。');
+      return;
+    }
+    setExtractingWord(true);
+    setAnalysisError('');
+    try {
+      const text = await extractWordResumeText(file);
+      setResumeText(text);
+      setShowPasteFallback(false);
+    } catch (err) {
+      console.warn('Retry failed:', err);
+      setAnalysisError(err instanceof Error ? err.message : '重试解析失败，请粘贴简历文本或另存为 .docx 再试。');
+      setShowPasteFallback(true);
+    } finally {
+      setExtractingWord(false);
     }
   };
 
@@ -1010,6 +1076,7 @@ export function Launch() {
               <textarea
                 value={resumeText}
                 onChange={e => setResumeText(e.target.value)}
+                ref={el => { pasteTextareaRef.current = el; }}
                 className="w-full h-32 text-sm resize-none rounded-xl p-3 outline-none transition-all"
                 style={{
                   background: 'rgba(247,255,252,0.8)',
@@ -1028,6 +1095,28 @@ export function Launch() {
               </div>
             )}
 
+            {extractingWord && (
+              <div className="flex items-center gap-2 text-xs text-gray-500 mb-3">
+                <Loader2 size={12} className="animate-spin" /> 正在解析 Word 文档，请稍候…
+              </div>
+            )}
+
+            {showPasteFallback && (
+              <div className="flex items-center gap-2 text-xs mb-4">
+                <button
+                  onClick={() => { setStep('resume'); setTimeout(() => pasteTextareaRef.current?.focus(), 120); }}
+                  className="px-3 py-2 rounded-xl"
+                  style={{ background: 'rgba(18,184,152,0.08)', color: '#12B898' }}
+                >粘贴/手动编辑简历</button>
+                <button
+                  onClick={handleRetryExtract}
+                  className="px-3 py-2 rounded-xl"
+                  style={{ background: 'rgba(59,130,246,0.08)', color: '#3B82F6' }}
+                >重试解析</button>
+                <div className="text-gray-400">解析失败时可选择粘贴或重试；PDF 请复制粘贴内容。</div>
+              </div>
+            )}
+
             <div className="flex gap-3">
               <button
                 onClick={() => setStep('jd')}
@@ -1038,17 +1127,19 @@ export function Launch() {
               </button>
               <motion.button
                 onClick={handleAnalyze}
+                disabled={extractingWord}
                 className="flex-1 py-3 rounded-2xl text-white font-medium flex items-center justify-center gap-2"
                 style={{
-                  background: 'linear-gradient(135deg, #12B898, #2AC59D)',
-                  boxShadow: '0 4px 16px rgba(18,184,152,0.3)',
+                  background: extractingWord ? 'rgba(226,232,240,0.9)' : 'linear-gradient(135deg, #12B898, #2AC59D)',
+                  boxShadow: extractingWord ? 'none' : '0 4px 16px rgba(18,184,152,0.3)',
+                  color: extractingWord ? '#94A3B8' : 'white',
                 }}
-                whileHover={{ y: -1 }}
-                whileTap={{ scale: 0.98 }}
+                whileHover={extractingWord ? {} : { y: -1 }}
+                whileTap={extractingWord ? {} : { scale: 0.98 }}
                 transition={{ type: 'spring', stiffness: 400, damping: 25 }}
               >
-                <Sparkles size={16} />
-                开始AI分析，生成能力画像
+                {extractingWord ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                {extractingWord ? '简历解析中…' : '开始AI分析，生成能力画像'}
               </motion.button>
             </div>
           </motion.div>
@@ -1063,6 +1154,16 @@ export function Launch() {
             exit={{ opacity: 0 }}
           >
             <AnalyzingAnimation completedCount={analyzingCompletedCount} />
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <div className="text-xs text-gray-500">正在分析 JD 与简历，可随时取消并返回上一步。</div>
+              <button
+                onClick={handleCancelAnalysis}
+                className="px-3 py-2 rounded-xl text-xs font-medium flex items-center gap-1.5"
+                style={{ background: 'rgba(239,68,68,0.08)', color: '#DC2626' }}
+              >
+                <X size={12} /> 取消分析
+              </button>
+            </div>
           </motion.div>
         )}
 

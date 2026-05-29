@@ -19,7 +19,7 @@
   ```bash
   VITE_AI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
   VITE_AI_API_KEY=your_api_key
-  VITE_AI_MODEL=glm-5
+  VITE_AI_MODEL=qwen3.6-flash
   ```
 
   3. 重新启动开发服务器：`npm run dev`
@@ -44,6 +44,8 @@
   VITE_AI_API_KEY
   VITE_AI_MODEL
   ```
+
+  并把 `VITE_AI_MODEL` 的值同步成 `qwen3.6-flash`。
 
   5. 点击 Deploy，等构建完成后就会拿到一个线上地址。
 

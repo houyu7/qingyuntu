@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import type { ResumeMaterial } from '../services/ai';
 
 export type StageStatus = 'completed' | 'active' | 'locked';
 
@@ -35,6 +36,7 @@ export interface Application {
   stage: number;
   location: string;
   salary: string;
+  resumeVersionId?: string;
 }
 
 export interface InterviewRecord {
@@ -67,8 +69,11 @@ export interface ResumeEntry {
   skills: string[];
   stage: number;
   isNew?: boolean;
-  sourceType?: 'seed' | 'application';
+  sourceType?: 'seed' | 'generated';
   sourceApplicationId?: string;
+  version?: number;
+  isDefault?: boolean;
+  sourceResumeVersionId?: string;
 }
 
 export interface Achievement {
@@ -103,6 +108,7 @@ interface JourneySnapshot {
   applications: Application[];
   interviewRecords: InterviewRecord[];
   questions: Question[];
+  resumeMaterials: ResumeMaterial[];
   resumeEntries: ResumeEntry[];
   achievements: Achievement[];
   xiaoYunMessage: string;
@@ -135,6 +141,22 @@ function writeStoredWorkspace(workspace: PersistedWorkspace) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(workspace));
 }
 
+function normalizeJourneySnapshot(snapshot: Partial<JourneySnapshot>): JourneySnapshot {
+  return {
+    user: snapshot.user ?? initialUser,
+    stages: snapshot.stages ?? initialStages,
+    dailyTasks: snapshot.dailyTasks ?? initialDailyTasks,
+    applications: snapshot.applications ?? initialApplications,
+    interviewRecords: snapshot.interviewRecords ?? initialInterviewRecords,
+    questions: snapshot.questions ?? initialQuestions,
+    resumeMaterials: snapshot.resumeMaterials ?? initialResumeMaterials,
+    resumeEntries: snapshot.resumeEntries ?? initialResumeEntries,
+    achievements: snapshot.achievements ?? initialAchievements,
+    xiaoYunMessage: snapshot.xiaoYunMessage ?? '今天也要加油哦！每一步都算数 ☁️',
+    showXiaoYun: snapshot.showXiaoYun ?? true,
+  };
+}
+
 function cloneSnapshot(snapshot: JourneySnapshot): JourneySnapshot {
   return {
     user: { ...snapshot.user },
@@ -150,6 +172,10 @@ function cloneSnapshot(snapshot: JourneySnapshot): JourneySnapshot {
       questions: [...record.questions],
     })),
     questions: snapshot.questions.map(question => ({ ...question })),
+    resumeMaterials: snapshot.resumeMaterials.map(material => ({
+      ...material,
+      skills: [...material.skills],
+    })),
     resumeEntries: snapshot.resumeEntries.map(entry => ({
       ...entry,
       bullets: [...entry.bullets],
@@ -168,6 +194,7 @@ interface AppContextType {
   applications: Application[];
   interviewRecords: InterviewRecord[];
   questions: Question[];
+  resumeMaterials: ResumeMaterial[];
   resumeEntries: ResumeEntry[];
   achievements: Achievement[];
   xiaoYunMessage: string;
@@ -183,7 +210,9 @@ interface AppContextType {
   updateStageProgress: (stageId: number, progressIndex: number, field: 'value' | 'total', newVal: number) => void;
   initializeJourney: (profile: Partial<AppUser>) => void;
   applyPlan: (plan: StagePlanItem[]) => void;
-  seedResumeLibrary: (input: { fileName: string; resumeText: string; targetJob: string; targetCompany: string; }) => void;
+  seedResumeLibrary: (input: { fileName: string; materials: ResumeMaterial[]; resumeText: string; targetJob: string; targetCompany: string; }) => void;
+  generateResumeVersion: () => string | null;
+  setDefaultResumeVersion?: (entryId: string) => void;
   savedAccounts: string[];
   loadAccount: (accountName: string) => boolean;
   resetCurrentAccount: () => void;
@@ -341,7 +370,7 @@ function normalizeResumeText(text: string): string[] {
     .slice(0, 3);
 }
 
-function buildResumeSkills(text: string, targetJob: string, company: string): string[] {
+function buildResumeSkills(text: string): string[] {
   const keywords = ['需求分析', '产品设计', '用户调研', '数据分析', '竞品分析', 'PRD', 'SQL', 'Excel', '沟通协调', '跨部门协作', '原型设计', '项目管理', '用户增长'];
   const matched = keywords.filter(keyword => text.includes(keyword));
 
@@ -349,28 +378,73 @@ function buildResumeSkills(text: string, targetJob: string, company: string): st
     return matched.slice(0, 6);
   }
 
-  return [targetJob || '目标岗位', company || '目标公司', '简历优化']
-    .filter(Boolean)
-    .slice(0, 3);
+  return ['简历优化'];
+}
+
+function buildResumeCardTitle(detail: string, index: number): string {
+  const trimmed = detail.replace(/[\s。！？!?,，；;：:]+$/g, '').trim();
+  if (!trimmed) return `素材 ${index + 1}`;
+
+  const normalized = trimmed
+    .replace(/^(参与|负责|主导|协助|完成|优化|整理|搭建|设计|推进|落地|分析)/, '')
+    .trim();
+
+  if (normalized.length <= 12) {
+    return normalized || `素材 ${index + 1}`;
+  }
+
+  return `${normalized.slice(0, 12)}…`;
 }
 
 function buildSeedResumeEntry(input: { fileName: string; resumeText: string; targetJob: string; targetCompany: string; }): ResumeEntry {
   const bullets = normalizeResumeText(input.resumeText);
   const safeBullets = bullets.length > 0
     ? bullets
-    : ['已完成 AI 简历分析，准备进入青云起航。', '上传的简历会作为 v1.0 初始版本保留。'];
+    : ['已完成 AI 简历分析，准备进入青云起航。', '上传的简历会作为初始版本保留。'];
 
   return {
     id: 'v1',
-    company: input.targetCompany || '初始简历',
+    company: '初始简历',
     companyColor: '#F59E0B',
-    position: input.targetJob || '目标岗位',
+    position: input.fileName ? `原始版 · ${input.fileName.replace(/\.[^.]+$/, '')}` : '原始版',
     period: input.fileName ? `初始简历 · ${input.fileName}` : '初始简历',
     bullets: safeBullets,
-    skills: buildResumeSkills(input.resumeText, input.targetJob, input.targetCompany),
+    skills: buildResumeSkills(input.resumeText),
     stage: 1,
     isNew: false,
     sourceType: 'seed',
+    version: 1,
+    isDefault: true,
+  };
+}
+
+function buildResumeVersionFromMaterials(baseEntry: ResumeEntry, materials: ResumeMaterial[], nextVersion: number): ResumeEntry {
+  const materialBullets = materials
+    .slice(0, 5)
+    .map((material, index) => `${index + 1}. ${material.title}：${material.detail}`);
+
+  const combinedBullets = [
+    ...baseEntry.bullets.slice(0, 2),
+    ...materialBullets,
+  ].slice(0, 6);
+
+  const combinedSkills = Array.from(new Set([
+    ...baseEntry.skills,
+    ...materials.flatMap(material => material.skills),
+  ])).slice(0, 6);
+
+  return {
+    ...baseEntry,
+    id: `v${nextVersion}`,
+    company: baseEntry.company,
+    position: `优化版 v${nextVersion}`,
+    period: `第 ${nextVersion} 版简历`,
+    bullets: combinedBullets.length > 0 ? combinedBullets : baseEntry.bullets,
+    skills: combinedSkills.length > 0 ? combinedSkills : baseEntry.skills,
+    version: nextVersion,
+    isDefault: false,
+    sourceType: 'generated',
+    sourceResumeVersionId: baseEntry.id,
   };
 }
 
@@ -408,10 +482,10 @@ function buildApplicationResumeEntry(app: Application, versionIndex: number): Re
 
   const skillMap: Record<Application['status'], string[]> = {
     applied: ['投递跟进', '岗位匹配', '简历优化'],
-    viewed: ['反馈追踪', '经历梳理', '表达优化'],
-    interview: ['面试准备', '项目复盘', '岗位理解'],
-    offer: ['Offer 争取', '谈薪准备', '职业判断'],
-    rejected: ['复盘总结', '短板补齐', '再投优化'],
+    viewed: ['投递跟进', '岗位匹配', '简历优化'],
+    interview: ['面试准备', 'STAR 表达', '项目复盘'],
+    offer: ['结果沉淀', '高光经历', '版本优化'],
+    rejected: ['复盘总结', '经历提炼', '下一轮优化'],
   };
 
   return {
@@ -424,8 +498,10 @@ function buildApplicationResumeEntry(app: Application, versionIndex: number): Re
     skills: skillMap[app.status],
     stage: app.stage,
     isNew: app.status === 'offer' || app.status === 'interview',
-    sourceType: 'application',
+    sourceType: 'generated',
     sourceApplicationId: app.id,
+    version: versionIndex,
+    isDefault: false,
   };
 }
 
@@ -640,6 +716,7 @@ const initialQuestions: Question[] = [
   },
 ];
 
+const initialResumeMaterials: ResumeMaterial[] = [];
 const initialResumeEntries: ResumeEntry[] = [];
 
 const initialAchievements: Achievement[] = [
@@ -658,17 +735,19 @@ const AppContext = createContext<AppContextType | null>(null);
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const storedWorkspace = readStoredWorkspace();
   const storedSnapshot = storedWorkspace?.activeAccount ? storedWorkspace.accounts[storedWorkspace.activeAccount] : null;
+  const normalizedStoredSnapshot = storedSnapshot ? normalizeJourneySnapshot(storedSnapshot) : null;
 
-  const [user, setUser] = useState<AppUser>(storedSnapshot?.user ?? initialUser);
-  const [stages, setStages] = useState<Stage[]>(storedSnapshot?.stages ?? initialStages);
-  const [dailyTasks, setDailyTasks] = useState<DailyTask[]>(storedSnapshot?.dailyTasks ?? initialDailyTasks);
-  const [applications, setApplications] = useState<Application[]>(storedSnapshot?.applications ?? initialApplications);
-  const [interviewRecords] = useState<InterviewRecord[]>(storedSnapshot?.interviewRecords ?? initialInterviewRecords);
-  const [questions, setQuestions] = useState<Question[]>(storedSnapshot?.questions ?? initialQuestions);
-  const [resumeEntries, setResumeEntries] = useState<ResumeEntry[]>(storedSnapshot?.resumeEntries ?? initialResumeEntries);
-  const [achievements] = useState<Achievement[]>(storedSnapshot?.achievements ?? initialAchievements);
-  const [xiaoYunMessage, setXiaoYunMessage] = useState(storedSnapshot?.xiaoYunMessage ?? '今天也要加油哦！每一步都算数 ☁️');
-  const [showXiaoYun, setShowXiaoYun] = useState(storedSnapshot?.showXiaoYun ?? true);
+  const [user, setUser] = useState<AppUser>(normalizedStoredSnapshot?.user ?? initialUser);
+  const [stages, setStages] = useState<Stage[]>(normalizedStoredSnapshot?.stages ?? initialStages);
+  const [dailyTasks, setDailyTasks] = useState<DailyTask[]>(normalizedStoredSnapshot?.dailyTasks ?? initialDailyTasks);
+  const [applications, setApplications] = useState<Application[]>(normalizedStoredSnapshot?.applications ?? initialApplications);
+  const [interviewRecords] = useState<InterviewRecord[]>(normalizedStoredSnapshot?.interviewRecords ?? initialInterviewRecords);
+  const [questions, setQuestions] = useState<Question[]>(normalizedStoredSnapshot?.questions ?? initialQuestions);
+  const [resumeMaterials, setResumeMaterials] = useState<ResumeMaterial[]>(normalizedStoredSnapshot?.resumeMaterials ?? initialResumeMaterials);
+  const [resumeEntries, setResumeEntries] = useState<ResumeEntry[]>(normalizedStoredSnapshot?.resumeEntries ?? initialResumeEntries);
+  const [achievements] = useState<Achievement[]>(normalizedStoredSnapshot?.achievements ?? initialAchievements);
+  const [xiaoYunMessage, setXiaoYunMessage] = useState(normalizedStoredSnapshot?.xiaoYunMessage ?? '今天也要加油哦！每一步都算数 ☁️');
+  const [showXiaoYun, setShowXiaoYun] = useState(normalizedStoredSnapshot?.showXiaoYun ?? true);
   const [savedAccounts, setSavedAccounts] = useState<string[]>(() => Object.keys(storedWorkspace?.accounts ?? {}));
 
   const persistCurrentSnapshot = (accountName: string, snapshot: JourneySnapshot) => {
@@ -686,15 +765,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const snapshot = workspace?.accounts[accountName];
     if (!workspace || !snapshot) return false;
 
-    setUser(snapshot.user);
-    setStages(snapshot.stages);
-    setDailyTasks(snapshot.dailyTasks);
-    setApplications(snapshot.applications);
-    setQuestions(snapshot.questions);
-    setResumeEntries(snapshot.resumeEntries);
-    setXiaoYunMessage(snapshot.xiaoYunMessage);
-    setShowXiaoYun(snapshot.showXiaoYun);
+    const normalizedSnapshot = normalizeJourneySnapshot(snapshot);
+
+    setUser(normalizedSnapshot.user);
+    setStages(normalizedSnapshot.stages);
+    setDailyTasks(normalizedSnapshot.dailyTasks);
+    setApplications(normalizedSnapshot.applications);
+    setQuestions(normalizedSnapshot.questions);
+    setResumeMaterials(normalizedSnapshot.resumeMaterials);
+    setResumeEntries(normalizedSnapshot.resumeEntries);
+    setXiaoYunMessage(normalizedSnapshot.xiaoYunMessage);
+    setShowXiaoYun(normalizedSnapshot.showXiaoYun);
     setSavedAccounts(Object.keys(workspace.accounts));
+    workspace.accounts[accountName] = cloneSnapshot(normalizedSnapshot);
     writeStoredWorkspace({ activeAccount: accountName, accounts: workspace.accounts });
     return true;
   };
@@ -710,6 +793,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setDailyTasks(initialDailyTasks);
       setApplications(initialApplications);
       setQuestions(initialQuestions);
+      setResumeMaterials(initialResumeMaterials);
       setResumeEntries(initialResumeEntries);
       setXiaoYunMessage('今天也要加油哦！每一步都算数 ☁️');
       setShowXiaoYun(true);
@@ -732,6 +816,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setDailyTasks(initialDailyTasks);
     setApplications(initialApplications);
     setQuestions(initialQuestions);
+    setResumeMaterials(initialResumeMaterials);
     setResumeEntries(initialResumeEntries);
     setXiaoYunMessage('今天也要加油哦！每一步都算数 ☁️');
     setShowXiaoYun(true);
@@ -749,12 +834,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       applications,
       interviewRecords,
       questions,
+      resumeMaterials,
       resumeEntries,
       achievements,
       xiaoYunMessage,
       showXiaoYun,
     });
-  }, [user, stages, dailyTasks, applications, interviewRecords, questions, resumeEntries, achievements, xiaoYunMessage, showXiaoYun]);
+  }, [user, stages, dailyTasks, applications, interviewRecords, questions, resumeMaterials, resumeEntries, achievements, xiaoYunMessage, showXiaoYun]);
 
   const completeTask = (taskId: string) => {
     setDailyTasks(prev => prev.map(t => {
@@ -771,11 +857,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const addApplication = (app: Application) => {
     setApplications(prev => [app, ...prev]);
-    setResumeEntries(prev => {
-      if (prev.some(entry => entry.sourceApplicationId === app.id)) return prev;
-      const versionIndex = Math.max(2, prev.filter(entry => entry.sourceType === 'application').length + 2);
-      return [...prev, buildApplicationResumeEntry(app, versionIndex)];
-    });
     setUser(u => ({ ...u, totalApplied: u.totalApplied + 1 }));
   };
 
@@ -789,14 +870,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (updatedApp) {
-        setResumeEntries(entries => entries.map(entry => {
-          if (entry.sourceApplicationId !== id) return entry;
-          return {
-            ...entry,
-            ...buildApplicationResumeEntry(updatedApp!, Number(entry.id.replace(/^v/, '')) || 2),
-            id: entry.id,
-          };
-        }));
+        void updatedApp;
       }
 
       return nextApplications;
@@ -831,6 +905,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     })));
     setDailyTasks(buildDailyTasksFromProfile(nextUser));
     setApplications(buildApplicationsFromProfile(nextUser));
+    setResumeMaterials(initialResumeMaterials);
     setResumeEntries(buildResumeEntriesFromProfile(nextUser));
 
     persistCurrentSnapshot(nextUser.name.trim(), {
@@ -845,6 +920,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       applications: buildApplicationsFromProfile(nextUser),
       interviewRecords: initialInterviewRecords,
       questions: initialQuestions,
+      resumeMaterials: initialResumeMaterials,
       resumeEntries: buildResumeEntriesFromProfile(nextUser),
       achievements: initialAchievements,
       xiaoYunMessage,
@@ -902,25 +978,51 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return nextStages;
     });
   };
-
-  const seedResumeLibrary = (input: { fileName: string; resumeText: string; targetJob: string; targetCompany: string; }) => {
+  const seedResumeLibrary = (input: { fileName: string; materials: ResumeMaterial[]; resumeText: string; targetJob: string; targetCompany: string; }) => {
     const seedEntry = buildSeedResumeEntry(input);
-    const syncedApplicationEntries = applications
-      .slice()
-      .reverse()
-      .map((app, index) => buildApplicationResumeEntry(app, index + 2));
+    const nextMaterials = input.materials.length > 0
+      ? input.materials
+      : normalizeResumeText(input.resumeText).map(detail => ({
+          title: buildResumeCardTitle(detail, 0),
+          detail,
+          skills: buildResumeSkills(detail),
+        }));
 
-    setResumeEntries([seedEntry, ...syncedApplicationEntries]);
+    setResumeMaterials(nextMaterials);
+    setResumeEntries([seedEntry]);
+  };
+
+  const generateResumeVersion = () => {
+    if (resumeMaterials.length === 0) return null;
+
+    const baseEntry = resumeEntries.find(entry => entry.isDefault) ?? resumeEntries[0] ?? null;
+    if (!baseEntry) return null;
+
+    const existingVersions = resumeEntries.map(entry => {
+      const parsedVersion = Number(entry.id.replace(/^v/, ''));
+      return entry.version ?? (Number.isFinite(parsedVersion) ? parsedVersion : 1);
+    });
+    const nextVersion = existingVersions.length > 0 ? Math.max(...existingVersions) + 1 : 2;
+
+    const newEntry = buildResumeVersionFromMaterials(baseEntry, resumeMaterials, nextVersion);
+    setResumeEntries(prev => [...prev, newEntry]);
+    return newEntry.id;
+  };
+
+  const setDefaultResumeVersion = (entryId: string) => {
+    setResumeEntries(prev => prev.map(e => ({ ...e, isDefault: e.id === entryId })));
   };
 
   return (
     <AppContext.Provider value={{
       user, stages, dailyTasks, applications, interviewRecords, questions,
-      resumeEntries, achievements, xiaoYunMessage, showXiaoYun,
+      resumeMaterials, resumeEntries, achievements, xiaoYunMessage, showXiaoYun,
       completeTask, setHasSetup, setXiaoYunMessage, setShowXiaoYun,
       addApplication, updateApplicationStatus, toggleQuestion, updateUser, initializeJourney,
       updateStageProgress, applyPlan,
       seedResumeLibrary,
+      generateResumeVersion,
+      setDefaultResumeVersion,
       savedAccounts, loadAccount, resetCurrentAccount,
     }}>
       {children}

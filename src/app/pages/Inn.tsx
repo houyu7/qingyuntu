@@ -2,12 +2,12 @@ import { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Building2, MapPin, DollarSign, Clock, ChevronRight,
-  CheckCircle2, Eye, MessageSquare,
+  CheckCircle2, Eye, MessageSquare, FileText,
   Plus, Briefcase, Sparkles, Bell, Settings,
   Pencil, X, Check
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import type { Application } from '../context/AppContext';
+import type { Application, ResumeEntry } from '../context/AppContext';
 
 const STATUS_CONFIG = {
   applied: {
@@ -69,10 +69,12 @@ interface EditModalData {
   notes: string;
 }
 
-function ApplicationCard({ app, onStatusChange, onEdit }: {
+function ApplicationCard({ app, onStatusChange, onEdit, onPreviewResume, resumeVersionLabel }: {
   app: Application;
   onStatusChange: (id: string, status: Application['status']) => void;
   onEdit: (data: EditModalData) => void;
+  onPreviewResume: () => void;
+  resumeVersionLabel: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -159,6 +161,12 @@ function ApplicationCard({ app, onStatusChange, onEdit }: {
               </span>
             </div>
 
+            {resumeVersionLabel && (
+              <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium" style={{ background: isRejected ? 'rgba(248,250,252,0.9)' : 'rgba(18,184,152,0.1)', color: isRejected ? '#94A3B8' : '#12B898' }}>
+                <FileText size={10} /> 投递简历版本：{resumeVersionLabel}
+              </div>
+            )}
+
             {waitAnxious && !isRejected && (
               <motion.div
                 initial={{ opacity: 0, y: 4 }}
@@ -240,6 +248,13 @@ function ApplicationCard({ app, onStatusChange, onEdit }: {
               >
                 <Pencil size={11} /> 编辑投递信息
               </button>
+              <button
+                onClick={onPreviewResume}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs"
+                style={{ background: 'rgba(59,130,246,0.08)', color: '#3B82F6' }}
+              >
+                <Eye size={11} /> 查看用于投递的简历
+              </button>
             </div>
           </motion.div>
         )}
@@ -257,7 +272,9 @@ interface AddAppForm {
 }
 
 export function Inn() {
-  const { applications, updateApplicationStatus, addApplication } = useApp();
+  const { applications, updateApplicationStatus, addApplication, resumeEntries } = useApp();
+  const [previewEntry, setPreviewEntry] = useState<ResumeEntry | null>(null);
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [filterStatus, setFilterStatus] = useState<Application['status'] | 'all'>('all');
   const [sortByDate, setSortByDate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -299,8 +316,24 @@ export function Inn() {
     setEditModal(null);
   };
 
+  const getResumeVersionLabel = (resumeVersionId?: string) => {
+    const entry = resumeEntries.find(r => r.id === resumeVersionId) ?? resumeEntries.find(r => r.isDefault) ?? resumeEntries[0] ?? null;
+    if (!entry) return '未绑定简历版本';
+    const versionLabel = entry.version ? `V${entry.version}` : '默认版本';
+    return entry.isDefault ? `${versionLabel} · 默认` : versionLabel;
+  };
+
+  const openResumePreview = (resumeVersionId?: string) => {
+    const entry = resumeEntries.find(r => r.id === resumeVersionId) ?? resumeEntries.find(r => r.isDefault) ?? resumeEntries[0] ?? null;
+    if (!entry) return;
+    setPreviewEntry(entry);
+    setShowPreviewModal(true);
+  };
+
   const handleAddApp = () => {
     if (!addForm.company.trim() || !addForm.position.trim()) return;
+    // choose default resume version if available
+    const defaultEntry = resumeEntries.find(e => e.isDefault) ?? resumeEntries[0] ?? null;
     addApplication({
       id: `a${Date.now()}`,
       company: addForm.company,
@@ -312,6 +345,7 @@ export function Inn() {
       stage: 2,
       location: addForm.location || '待定',
       salary: addForm.salary || '面议',
+      resumeVersionId: defaultEntry?.id,
     });
     setAddForm({ company: '', position: '', location: '', salary: '', appliedDate: new Date().toISOString().slice(0, 10) });
     setShowAddModal(false);
@@ -459,6 +493,8 @@ export function Inn() {
               app={app}
               onStatusChange={updateApplicationStatus}
               onEdit={openEditModal}
+              onPreviewResume={() => openResumePreview(app.resumeVersionId)}
+              resumeVersionLabel={getResumeVersionLabel(app.resumeVersionId)}
             />
           </motion.div>
         ))}
@@ -559,6 +595,48 @@ export function Inn() {
                 >
                   <Check size={14} /> 保存
                 </motion.button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showPreviewModal && previewEntry && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-end justify-center"
+            style={{ background: 'rgba(0,0,0,0.3)', backdropFilter: 'blur(4px)' }}
+            onClick={e => e.target === e.currentTarget && setShowPreviewModal(false)}
+          >
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', stiffness: 400, damping: 35 }}
+              className="w-full max-w-2xl rounded-t-3xl p-6 pb-8"
+              style={{ background: 'white', boxShadow: '0 -8px 40px rgba(0,0,0,0.12)' }}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-semibold text-gray-800">用于投递的简历版本</span>
+                <button onClick={() => setShowPreviewModal(false)}>
+                  <X size={18} style={{ color: '#9CA3AF' }} />
+                </button>
+              </div>
+              <div className="text-xs text-gray-400 mb-4">{previewEntry.company} · {previewEntry.position}</div>
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium mb-4" style={{ background: 'rgba(18,184,152,0.1)', color: '#12B898' }}>
+                <FileText size={10} /> {previewEntry.isDefault ? '默认投递版本' : `版本 V${previewEntry.version ?? 1}`}
+              </div>
+              <div className="text-sm text-gray-700 space-y-2 max-h-72 overflow-auto">
+                <div>公司：{previewEntry.company}</div>
+                <div>岗位：{previewEntry.position}</div>
+                <div>阶段：{previewEntry.stage}</div>
+                <div>技能：{previewEntry.skills.join(' / ') || '暂无'}</div>
+                <div className="pt-2 border-t border-gray-100">
+                  {previewEntry.bullets.map((b, i) => <div key={i} className="mb-1">• {b}</div>)}
+                </div>
               </div>
             </motion.div>
           </motion.div>

@@ -27,11 +27,32 @@ export interface AiLaunchAnalysis {
   raw?: string;
 }
 
+export interface ResumeMaterial {
+  title: string;
+  detail: string;
+  skills: string[];
+}
+
+export interface ResumeMaterialExtraction {
+  materials: ResumeMaterial[];
+  raw?: string;
+}
+
 interface AnalyzeInput {
   jdText: string;
   resumeText: string;
   targetJob: string;
   targetCompany: string;
+}
+
+interface ResumeMaterialInput {
+  resumeText: string;
+  targetJob: string;
+  targetCompany: string;
+}
+
+interface RequestOptions {
+  signal?: AbortSignal;
 }
 
 interface ChatCompletionResponse {
@@ -93,7 +114,7 @@ function extractJsonObject(raw: string): string {
   const start = trimmed.indexOf('{');
   const end = trimmed.lastIndexOf('}');
   if (start === -1 || end === -1 || end <= start) {
-    throw new Error('AI 返回内容不是合法 JSON。');
+    throw new Error('AI 返回内容不是合法 JSON。建议重试，或切换到更稳定的模型后再分析。');
   }
 
   return trimmed.slice(start, end + 1);
@@ -146,7 +167,31 @@ function buildFallbackDimensions(suggestions: AiSuggestion[]): AiDimension[] {
   ];
 }
 
-export async function analyzeCareerPathWithAI(input: AnalyzeInput): Promise<AiLaunchAnalysis> {
+function buildLocalResumeMaterials(resumeText: string): ResumeMaterial[] {
+  const lines = resumeText
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(line => !/^(?:[-*•·]|\d+[.、]|[一二三四五六七八九十]+[.、])/.test(line));
+
+  const source = lines.length > 0
+    ? lines.slice(0, 6)
+    : ['未提取到明确经历，建议补充项目、实习、课程实践或比赛经历。'];
+
+  return source.map((detail, index) => ({
+    title: `素材 ${index + 1}`,
+    detail,
+    skills: detail.includes('项目')
+      ? ['项目复盘']
+      : detail.includes('用户')
+        ? ['用户调研']
+        : detail.includes('数据')
+          ? ['数据分析']
+          : ['简历优化'],
+  }));
+}
+
+export async function analyzeCareerPathWithAI(input: AnalyzeInput, options: RequestOptions = {}): Promise<AiLaunchAnalysis> {
   const apiKey = getEnv('VITE_AI_API_KEY');
   const model = getEnv('VITE_AI_MODEL');
   const baseUrl = getEnv('VITE_AI_BASE_URL');
@@ -189,6 +234,7 @@ export async function analyzeCareerPathWithAI(input: AnalyzeInput): Promise<AiLa
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
+    signal: options.signal,
     body: JSON.stringify({
       model,
       temperature: 0.4,
@@ -253,7 +299,7 @@ export async function analyzeCareerPathWithAI(input: AnalyzeInput): Promise<AiLa
     : buildFallbackDimensions(suggestions);
 
   if (!encouragement || suggestions.length === 0) {
-    throw new Error('AI 返回内容不完整，请重试。');
+    throw new Error('AI 返回内容不完整，请重试；如果一直失败，可改用更大的模型或稍后再试。');
   }
 
   return {
@@ -262,4 +308,92 @@ export async function analyzeCareerPathWithAI(input: AnalyzeInput): Promise<AiLa
     dimensions: dimensions.length > 0 ? dimensions : buildFallbackDimensions(suggestions),
     raw: content,
   };
+}
+
+export async function extractResumeMaterialsWithAI(input: ResumeMaterialInput, options: RequestOptions = {}): Promise<ResumeMaterialExtraction> {
+  const apiKey = getEnv('VITE_AI_API_KEY');
+  const model = getEnv('VITE_AI_MODEL');
+  const baseUrl = getEnv('VITE_AI_BASE_URL');
+
+  if (!apiKey || !model || !baseUrl) {
+    return { materials: buildLocalResumeMaterials(input.resumeText) };
+  }
+
+  const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+
+  const systemPrompt = [
+    '你是简历经历素材提取器。',
+    '你必须仅输出 JSON，不要输出任何额外文字。',
+    '只根据用户提供的简历内容提取经历素材，不要使用目标岗位或目标公司去编造经历。',
+    'JSON 格式如下：',
+    '{',
+    '  "materials": [',
+    '    { "title": "string", "detail": "string", "skills": ["string"] }',
+    '  ]',
+    '}',
+    'materials 需要 3-8 条，若内容不足则尽量输出已有真实素材，不要虚构。',
+    '每条材料标题要短，detail 要保留经历原意，skills 给出 1-3 个与该条经历相关的技能标签。',
+  ].join('\n');
+
+  const userPrompt = [
+    `目标岗位：${input.targetJob || '未填写'}`,
+    `目标公司：${input.targetCompany || '未填写'}`,
+    '【简历内容】',
+    input.resumeText || '未提供可解析文本',
+  ].join('\n\n');
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: options.signal,
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(formatApiError(response.status, text.slice(0, 200), response));
+    }
+
+    const data = (await response.json()) as ChatCompletionResponse;
+    const content = data.choices?.[0]?.message?.content?.trim();
+
+    if (!content) {
+      return { materials: buildLocalResumeMaterials(input.resumeText) };
+    }
+
+    const parsed = JSON.parse(extractJsonObject(content)) as { materials?: Array<{ title?: string; detail?: string; skills?: unknown }> };
+    const materials = Array.isArray(parsed?.materials)
+      ? parsed.materials
+          .map((item, index) => ({
+            title: typeof item?.title === 'string' && item.title.trim() ? item.title.trim() : `素材 ${index + 1}`,
+            detail: typeof item?.detail === 'string' && item.detail.trim() ? item.detail.trim() : '',
+            skills: Array.isArray(item?.skills)
+              ? item.skills.map(skill => String(skill).trim()).filter(Boolean).slice(0, 3)
+              : [],
+          }))
+          .filter(item => item.detail)
+      : [];
+
+    if (materials.length > 0) {
+      return { materials: materials.slice(0, 8), raw: content };
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error;
+    }
+    // fall through to local extraction
+  }
+
+  return { materials: buildLocalResumeMaterials(input.resumeText) };
 }
