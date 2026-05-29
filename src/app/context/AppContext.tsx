@@ -67,6 +67,8 @@ export interface ResumeEntry {
   skills: string[];
   stage: number;
   isNew?: boolean;
+  sourceType?: 'seed' | 'application';
+  sourceApplicationId?: string;
 }
 
 export interface Achievement {
@@ -181,6 +183,7 @@ interface AppContextType {
   updateStageProgress: (stageId: number, progressIndex: number, field: 'value' | 'total', newVal: number) => void;
   initializeJourney: (profile: Partial<AppUser>) => void;
   applyPlan: (plan: StagePlanItem[]) => void;
+  seedResumeLibrary: (input: { fileName: string; resumeText: string; targetJob: string; targetCompany: string; }) => void;
   savedAccounts: string[];
   loadAccount: (accountName: string) => boolean;
   resetCurrentAccount: () => void;
@@ -327,6 +330,103 @@ function buildApplicationsFromProfile(profile: AppUser): Application[] {
 function buildResumeEntriesFromProfile(profile: AppUser): ResumeEntry[] {
   void profile;
   return [];
+}
+
+function normalizeResumeText(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(line => !/^(?:[-*•·]|\d+[.、]|[一二三四五六七八九十]+[.、])/.test(line))
+    .slice(0, 3);
+}
+
+function buildResumeSkills(text: string, targetJob: string, company: string): string[] {
+  const keywords = ['需求分析', '产品设计', '用户调研', '数据分析', '竞品分析', 'PRD', 'SQL', 'Excel', '沟通协调', '跨部门协作', '原型设计', '项目管理', '用户增长'];
+  const matched = keywords.filter(keyword => text.includes(keyword));
+
+  if (matched.length > 0) {
+    return matched.slice(0, 6);
+  }
+
+  return [targetJob || '目标岗位', company || '目标公司', '简历优化']
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function buildSeedResumeEntry(input: { fileName: string; resumeText: string; targetJob: string; targetCompany: string; }): ResumeEntry {
+  const bullets = normalizeResumeText(input.resumeText);
+  const safeBullets = bullets.length > 0
+    ? bullets
+    : ['已完成 AI 简历分析，准备进入青云起航。', '上传的简历会作为 v1.0 初始版本保留。'];
+
+  return {
+    id: 'v1',
+    company: input.targetCompany || '初始简历',
+    companyColor: '#F59E0B',
+    position: input.targetJob || '目标岗位',
+    period: input.fileName ? `初始简历 · ${input.fileName}` : '初始简历',
+    bullets: safeBullets,
+    skills: buildResumeSkills(input.resumeText, input.targetJob, input.targetCompany),
+    stage: 1,
+    isNew: false,
+    sourceType: 'seed',
+  };
+}
+
+function buildApplicationResumeEntry(app: Application, versionIndex: number): ResumeEntry {
+  const statusLabels: Record<Application['status'], string> = {
+    applied: '已投递',
+    viewed: '已查看',
+    interview: '面试中',
+    offer: 'Offer',
+    rejected: '已结束',
+  };
+
+  const bulletMap: Record<Application['status'], string[]> = {
+    applied: [
+      `完成 ${app.company} 的 ${app.position} 投递`,
+      `当前状态：${statusLabels[app.status]}，继续关注岗位反馈`,
+    ],
+    viewed: [
+      `${app.company} 已查看简历，等待下一步反馈`,
+      '继续补充经历素材，提升简历表达清晰度',
+    ],
+    interview: [
+      `进入 ${app.company} 面试流程，重点准备岗位匹配点`,
+      '整理项目复盘与 STAR 表达，提升面试稳定性',
+    ],
+    offer: [
+      `成功拿到 ${app.company} 的 Offer`,
+      '沉淀这段经历，形成后续版本简历的高光素材',
+    ],
+    rejected: [
+      `在 ${app.company} 的投递已结束`,
+      '复盘失败原因，提炼下一轮投递的优化点',
+    ],
+  };
+
+  const skillMap: Record<Application['status'], string[]> = {
+    applied: ['投递跟进', '岗位匹配', '简历优化'],
+    viewed: ['反馈追踪', '经历梳理', '表达优化'],
+    interview: ['面试准备', '项目复盘', '岗位理解'],
+    offer: ['Offer 争取', '谈薪准备', '职业判断'],
+    rejected: ['复盘总结', '短板补齐', '再投优化'],
+  };
+
+  return {
+    id: `v${versionIndex}`,
+    company: app.company,
+    companyColor: app.companyColor,
+    position: app.position,
+    period: `${statusLabels[app.status]} · ${app.appliedDate}`,
+    bullets: bulletMap[app.status],
+    skills: skillMap[app.status],
+    stage: app.stage,
+    isNew: app.status === 'offer' || app.status === 'interview',
+    sourceType: 'application',
+    sourceApplicationId: app.id,
+  };
 }
 
 const initialUser: AppUser = {
@@ -671,11 +771,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const addApplication = (app: Application) => {
     setApplications(prev => [app, ...prev]);
+    setResumeEntries(prev => {
+      if (prev.some(entry => entry.sourceApplicationId === app.id)) return prev;
+      const versionIndex = Math.max(2, prev.filter(entry => entry.sourceType === 'application').length + 2);
+      return [...prev, buildApplicationResumeEntry(app, versionIndex)];
+    });
     setUser(u => ({ ...u, totalApplied: u.totalApplied + 1 }));
   };
 
   const updateApplicationStatus = (id: string, status: Application['status']) => {
-    setApplications(prev => prev.map(a => a.id === id ? { ...a, status } : a));
+    setApplications(prev => {
+      let updatedApp: Application | null = null;
+      const nextApplications = prev.map(a => {
+        if (a.id !== id) return a;
+        updatedApp = { ...a, status };
+        return updatedApp;
+      });
+
+      if (updatedApp) {
+        setResumeEntries(entries => entries.map(entry => {
+          if (entry.sourceApplicationId !== id) return entry;
+          return {
+            ...entry,
+            ...buildApplicationResumeEntry(updatedApp!, Number(entry.id.replace(/^v/, '')) || 2),
+            id: entry.id,
+          };
+        }));
+      }
+
+      return nextApplications;
+    });
   };
 
   const toggleQuestion = (id: string) => {
@@ -778,6 +903,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
+  const seedResumeLibrary = (input: { fileName: string; resumeText: string; targetJob: string; targetCompany: string; }) => {
+    const seedEntry = buildSeedResumeEntry(input);
+    const syncedApplicationEntries = applications
+      .slice()
+      .reverse()
+      .map((app, index) => buildApplicationResumeEntry(app, index + 2));
+
+    setResumeEntries([seedEntry, ...syncedApplicationEntries]);
+  };
+
   return (
     <AppContext.Provider value={{
       user, stages, dailyTasks, applications, interviewRecords, questions,
@@ -785,6 +920,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       completeTask, setHasSetup, setXiaoYunMessage, setShowXiaoYun,
       addApplication, updateApplicationStatus, toggleQuestion, updateUser, initializeJourney,
       updateStageProgress, applyPlan,
+      seedResumeLibrary,
       savedAccounts, loadAccount, resetCurrentAccount,
     }}>
       {children}

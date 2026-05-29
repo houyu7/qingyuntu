@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   FileText, Plus, ChevronDown, Star, Sparkles,
@@ -9,7 +10,8 @@ import { useApp } from '../context/AppContext';
 
 export function ResumeLib() {
   const { resumeEntries, stages, user } = useApp();
-  const [expandedEntry, setExpandedEntry] = useState<string | null>('r1');
+  const navigate = useNavigate();
+  const [expandedEntry, setExpandedEntry] = useState<string | null>(null);
   const [activeVersion, setActiveVersion] = useState('v1');
   const [activeTab, setActiveTab] = useState<'entries' | 'versions' | 'growth'>('entries');
 
@@ -35,6 +37,10 @@ export function ResumeLib() {
     { label: '当前阶段', before: Math.max(activeStage?.id ?? 1 - 1, 0), after: activeStage?.id ?? 1, unit: '阶段', color: '#8B5CF6' },
     { label: '目标岗位', before: user.hasSetup ? 0 : 1, after: user.targetJob ? 1 : 0, unit: '个', color: '#F59E0B' },
   ];
+
+  const xiaoYunMessage = resumeEntries.length === 0
+    ? '先完成一次 AI 分析，简牍会生成你的 v1.0 初始简历。'
+    : `当前已有 ${resumeEntries.length} 条简历版本，青云驿馆的新经历会继续同步进来。`;
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-6">
@@ -101,7 +107,7 @@ export function ResumeLib() {
         <span className="text-base">☁️</span>
         <p className="text-xs" style={{ color: '#6B7280' }}>
           <span className="font-medium" style={{ color: '#F59E0B' }}>小云说：</span>
-          看看你的成长！从1条经历到3条，你已经比入职前强多了。继续沉淀，简牍就是你的青云印记 ✨
+          {xiaoYunMessage}
         </p>
       </motion.div>
 
@@ -229,6 +235,7 @@ export function ResumeLib() {
                 ))}
 
                 <motion.button
+                  onClick={() => navigate('/inn')}
                   className="w-full py-3 rounded-2xl flex items-center justify-center gap-2 text-sm"
                   style={{
                     border: '1.5px dashed rgba(226,232,240,0.8)',
@@ -346,7 +353,7 @@ export function ResumeLib() {
           >
             <div className="space-y-4">
               {/* Growth metrics */}
-              {GROWTH_ITEMS.map((item, i) => (
+              {growthItems.map((item, i) => (
                 <motion.div
                   key={item.label}
                   initial={{ opacity: 0, y: 8 }}

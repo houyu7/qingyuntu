@@ -610,7 +610,7 @@ function PlanStep({
 
 export function Launch() {
   const navigate = useNavigate();
-  const { user, setHasSetup, setXiaoYunMessage, applyPlan } = useApp();
+  const { user, setHasSetup, setXiaoYunMessage, applyPlan, seedResumeLibrary } = useApp();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState<Step>('jd');
   const [jdText, setJdText] = useState('');
@@ -691,6 +691,12 @@ export function Launch() {
   };
 
   const handleStartJourney = () => {
+    seedResumeLibrary({
+      fileName: resumeFileName,
+      resumeText: resumeText.trim(),
+      targetJob: user.targetJob,
+      targetCompany: user.targetCompany,
+    });
     applyPlan(plan);
     setHasSetup(true);
     navigate('/', { replace: true });
